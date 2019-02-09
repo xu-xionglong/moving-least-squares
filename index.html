@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Moving least squares</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no,
+  minimum-scale=1.0, maximum-scale=1.0">
+  <style>
+    body {
+      font-family: monospace;
+      margin: 0;
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+      height: 100vh;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+<script src="./three.min.js"></script>
+<script src="./mls.js"></script>
+<script>
+
+
+let camera;
+let scene;
+let renderer;
+let geometry;
+let points;
+let pointGeometry;
+
+let touchStartPoint = new Array(2);
+let actualTouchPoint = new Array(2);
+let draggingIndex = -1;
+
+
+
+const GRID_WIDTH = 10;
+const GRID_HEIGHT = 10;
+const MAX_CONTROL_POINT = 20;
+
+let controlPoints = new Map();
+let deformedPositions = [];
+init();
+
+function updateGrid()
+{
+  mls2D(controlPoints, GRID_WIDTH, GRID_HEIGHT, deformedPositions);
+  geometry.attributes.position.copyArray(deformedPositions);
+  geometry.attributes.position.needsUpdate = true;
+}
+
+function resetCamera() {
+
+  let gridWidth = GRID_WIDTH - 1;
+  let gridHeight = GRID_HEIGHT - 1;
+
+  let windowRatio = window.innerWidth / window.innerHeight;
+  let gridRatio = gridWidth / gridHeight;
+  let cameraWidth;
+  let cameraHeight;
+  if(windowRatio > gridRatio) {
+    cameraHeight = gridHeight * 1.4;
+    cameraWidth = cameraHeight * windowRatio;
+  }
+  else {
+    cameraWidth = gridWidth * 1.4;
+    cameraHeight = cameraWidth / windowRatio;
+  }
+  camera.near = -1;
+  camera.far = 1;
+  camera.left = - (cameraWidth - gridWidth) / 2;
+  camera.right = camera.left + cameraWidth;
+  camera.bottom = - (cameraHeight - gridHeight) / 2;
+  camera.top = camera.bottom + cameraHeight;
+
+  camera.updateProjectionMatrix();
+}
+
+function updatePointGeometry()
+{
+  let positions = pointGeometry.attributes.position.array;
+  let i = 0;
+  for(let [controlPointIndex, controlPointDst] of controlPoints) {
+    positions[i ++] = controlPointDst[0];
+    positions[i ++] = controlPointDst[1];
+    positions[i ++] = -0.5;
+  }
+  pointGeometry.attributes.position.needsUpdate = true;
+  pointGeometry.setDrawRange(0, i / 3);
+}
+
+
+function init() {
+
+  camera = new THREE.OrthographicCamera( -1, 1, 1, -1, -1, 1 );
+  resetCamera();
+
+  scene = new THREE.Scene();
+  
+  geometry = new THREE.BufferGeometry();
+  let indices = [];
+  for(let i = 0; i < GRID_HEIGHT - 1; ++ i) {
+    for(let j = 0; j < GRID_WIDTH - 1; ++ j) {
+      let a = i * GRID_WIDTH + j;
+      let b = i * GRID_WIDTH + j + 1;
+      let c = (i + 1) * GRID_WIDTH + j;
+      let d = (i + 1) * GRID_WIDTH + j + 1;
+      indices.push(a, b, c);
+      indices.push(b, c, d);
+    }
+  }
+  geometry.setIndex(indices);
+  geometry.addAttribute('position', new THREE.BufferAttribute(new Float32Array(GRID_WIDTH * GRID_HEIGHT * 2), 2));
+
+  controlPoints.set(0, [0, 0]);
+  controlPoints.set(GRID_WIDTH - 1, [GRID_WIDTH - 1, 0]);
+  controlPoints.set(GRID_WIDTH * (GRID_HEIGHT - 1), [0, GRID_HEIGHT - 1]);
+  controlPoints.set(GRID_WIDTH * GRID_HEIGHT - 1, [GRID_WIDTH - 1, GRID_HEIGHT - 1]);
+
+  updateGrid();
+
+  let material = new THREE.MeshBasicMaterial({color: 0xffffff, wireframe: true});
+  let plane = new THREE.Mesh(geometry, material);
+  scene.add(plane);
+
+  renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  pointGeometry = new THREE.BufferGeometry();
+  pointGeometry.addAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_CONTROL_POINT * 3), 3));
+  let pointMatrial = new THREE.PointsMaterial({size: 0.02, color: 0xffff00, opacity: 1});
+  points = new THREE.Points(pointGeometry, pointMatrial);
+  updatePointGeometry();
+  scene.add(points);
+
+  window.addEventListener( 'resize', onWindowResize, false );
+  renderer.domElement.addEventListener('touchstart', touchStart, false);
+  renderer.domElement.addEventListener('touchmove', touchMove, false);
+  renderer.domElement.addEventListener('touchend', touchEnd, false);
+  renderer.domElement.addEventListener('touchcancel', touchEnd, false);
+
+  renderer.domElement.addEventListener('mousedown', mouseDown, false);
+  renderer.domElement.addEventListener('mousemove', mouseMove, false);
+  renderer.domElement.addEventListener('mouseup', mouseUp, false);
+
+  update();
+}
+
+function update() {
+  updateGrid();
+  renderer.render(scene, camera);
+  requestAnimationFrame(update);
+}
+
+function onWindowResize () {
+  resetCamera();
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function viewSpaceToCameraSpace(x, y) {
+  let rect = renderer.domElement.getBoundingClientRect();
+  let nx = ((x - rect.left) / rect.width);
+  let ny = 1 - ((y - rect.top) / rect.height);
+  return [camera.left * (1 - nx) + camera.right * nx, camera.top * ny + camera.bottom * (1 - ny)];
+}
+
+
+function mouseDown(event) {
+  touchStartPoint = viewSpaceToCameraSpace(event.clientX, event.clientY);
+  for(let i = 0; i < deformedPositions.length; i += 2) {
+    let x = deformedPositions[i];
+    let y = deformedPositions[i + 1];
+    let dx = x - touchStartPoint[0];
+    let dy = y - touchStartPoint[1];
+    if((dx * dx + dy * dy) < 0.16) {
+      draggingIndex = i / 2;
+      break;
+    }
+  }
+  actualTouchPoint[0] = deformedPositions[2 * draggingIndex];
+    actualTouchPoint[1] = deformedPositions[2 * draggingIndex + 1];
+  if(draggingIndex !== -1 && !controlPoints.has(draggingIndex)) {
+    controlPoints.set(draggingIndex, [actualTouchPoint[0], actualTouchPoint[1]]);
+    updatePointGeometry();
+    updateGrid();
+    console.log(draggingIndex + ":" + deformedPositions[2 * draggingIndex] + "," + deformedPositions[2 * draggingIndex + 1]);
+  }
+}
+
+function mouseMove(event) {
+  if(draggingIndex !== -1) {
+    touchCurrentPoint = viewSpaceToCameraSpace(event.clientX, event.clientY);
+    let dx = touchCurrentPoint[0] - touchStartPoint[0];
+    let dy = touchCurrentPoint[1] - touchStartPoint[1];
+    controlPoints.set(draggingIndex, [actualTouchPoint[0] + dx, actualTouchPoint[1] + dy]);
+    updatePointGeometry();
+    updateGrid();
+  }
+}
+
+function mouseUp(event) {
+  draggingIndex = -1;
+}
+
+
+
+function touchStart(event) {
+  event = event.changedTouches[ 0 ];
+  mouseDown(event);
+}
+
+function touchMove(event) {
+  event = event.changedTouches[ 0 ];
+  mouseMove(event);
+}
+
+function touchEnd(event) {
+  event = event.changedTouches[ 0 ];
+  mouseUp(event);
+}
+
+
+</script>
+</body>
+</html>
